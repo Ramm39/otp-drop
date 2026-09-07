@@ -1,4 +1,5 @@
 import type { Handler, HandlerEvent } from "@netlify/functions";
+import { corsHeaders, json, optionsResponse } from "./lib/shared";
 
 type Body = {
   to?: string;
@@ -11,11 +12,7 @@ function generateOtp(): string {
 
 export const handler: Handler = async (event: HandlerEvent) => {
   if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 204,
-      headers: corsHeaders(),
-      body: "",
-    };
+    return optionsResponse();
   }
 
   if (event.httpMethod !== "POST") {
@@ -69,20 +66,3 @@ export const handler: Handler = async (event: HandlerEvent) => {
     },
   });
 };
-
-function corsHeaders(): Record<string, string> {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Content-Type": "application/json",
-  };
-}
-
-function json(statusCode: number, payload: unknown) {
-  return {
-    statusCode,
-    headers: corsHeaders(),
-    body: JSON.stringify(payload),
-  };
-}
