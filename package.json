@@ -1,0 +1,19 @@
+{
+  "name": "otp-drop",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "netlify": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^6.0.0",
+    "netlify-cli": "^23.0.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}
