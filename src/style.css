@@ -194,6 +194,72 @@ input {
   font-size: 0.98rem;
 }
 
+.keep-badge {
+  flex-shrink: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(124, 186, 61, 0.22);
+  color: #d7f2a8;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.keep-badge.off {
+  background: rgba(242, 107, 58, 0.2);
+  color: #ffd2c0;
+}
+
+.keep-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  user-select: none;
+}
+
+.keep-toggle input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--accent-deep);
+}
+
+.recovery-box {
+  margin: 1rem 0 0.25rem;
+  padding: 1rem;
+  border-radius: 18px;
+  border: 1px dashed rgba(23, 48, 40, 0.2);
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.recovery-box h4 {
+  margin: 0 0 0.25rem;
+  font-family: "Fraunces", serif;
+  font-size: 1.05rem;
+}
+
+.recovery-box .hint {
+  margin-bottom: 0.75rem;
+}
+
+.recovery-box input {
+  width: 100%;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.85rem 0.95rem;
+  background: #fff;
+  color: var(--ink);
+}
+
+.btn-danger {
+  background: rgba(180, 35, 24, 0.1);
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

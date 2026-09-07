@@ -4,6 +4,7 @@ import {
   extractOtp,
   getMessage,
   listMessages,
+  loginInbox,
   type MailAccount,
   type MailMessage,
 } from "./mailtm";
@@ -15,6 +16,7 @@ type Session = {
   latestOtp: string | null;
   polling: boolean;
   busy: boolean;
+  kept: boolean;
 };
 
 const state: Session = {
@@ -24,10 +26,13 @@ const state: Session = {
   latestOtp: null,
   polling: false,
   busy: false,
+  kept: true,
 };
 
 const STORAGE_KEY = "otpdrop.session.v1";
+const KEEP_KEY = "otpdrop.keep.v1";
 let pollTimer: number | undefined;
+let refreshInFlight: Promise<boolean> | null = null;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -44,8 +49,8 @@ app.innerHTML = `
       <div class="hero-copy">
         <h2>Catch one-time codes in a fresh inbox.</h2>
         <p>
-          Spin up a temporary address, request a test OTP, or forward real
-          verification mail here. Codes are highlighted the moment they land.
+          Your address is saved on this device and reused on every visit.
+          Keep the recovery password so you can restore it later.
         </p>
       </div>
     </section>
@@ -54,18 +59,33 @@ app.innerHTML = `
       <article class="panel" id="inbox-panel">
         <h3>Your inbox</h3>
         <p class="hint">
-          Addresses are backed by mail.tm for live delivery. Use “Send test OTP”
-          to verify the UI without leaving this page.
+          Leave <strong>Keep this address</strong> on to reuse the same inbox.
+          Only click New address when you intentionally want a different one.
         </p>
 
         <div class="address-box">
           <div class="address">
-            <span id="address-label">Creating inbox…</span>
+            <span id="address-label">Loading saved inbox…</span>
+            <span class="keep-badge" id="keep-badge">Saved</span>
           </div>
+          <label class="keep-toggle">
+            <input type="checkbox" id="keep-toggle" checked />
+            <span>Keep this address on this device</span>
+          </label>
           <div class="actions">
-            <button class="btn btn-primary" id="btn-new" type="button">New address</button>
-            <button class="btn btn-secondary" id="btn-copy" type="button" disabled>Copy</button>
+            <button class="btn btn-secondary" id="btn-copy" type="button" disabled>Copy address</button>
+            <button class="btn btn-secondary" id="btn-save" type="button" disabled>Copy recovery</button>
             <button class="btn btn-spark" id="btn-otp" type="button" disabled>Send test OTP</button>
+            <button class="btn btn-danger" id="btn-new" type="button">New address</button>
+          </div>
+        </div>
+
+        <div class="recovery-box">
+          <h4>Restore a kept address</h4>
+          <p class="hint">Paste the recovery line, or type the email and password.</p>
+          <input id="restore-input" type="text" placeholder="address@domain | password" autocomplete="off" />
+          <div class="actions">
+            <button class="btn btn-primary" id="btn-restore" type="button">Restore inbox</button>
           </div>
         </div>
 
@@ -97,6 +117,8 @@ app.innerHTML = `
 `;
 
 const addressLabel = must("#address-label");
+const keepBadge = must("#keep-badge");
+const keepToggle = must<HTMLInputElement>("#keep-toggle");
 const statusEl = must("#status");
 const otpCard = must("#otp-card");
 const otpValue = must("#otp-value");
@@ -104,12 +126,32 @@ const messageList = must("#message-list");
 const reader = must("#reader");
 const readerSubject = must("#reader-subject");
 const readerBody = must("#reader-body");
+const restoreInput = must<HTMLInputElement>("#restore-input");
 const btnNew = must<HTMLButtonElement>("#btn-new");
 const btnCopy = must<HTMLButtonElement>("#btn-copy");
+const btnSave = must<HTMLButtonElement>("#btn-save");
 const btnOtp = must<HTMLButtonElement>("#btn-otp");
+const btnRestore = must<HTMLButtonElement>("#btn-restore");
+
+state.kept = restoreKeepPreference();
+keepToggle.checked = state.kept;
+renderKeepBadge();
+
+keepToggle.addEventListener("change", () => {
+  state.kept = keepToggle.checked;
+  persistKeepPreference(state.kept);
+  renderKeepBadge();
+  if (state.kept && state.account) {
+    persistSession(state.account);
+    setStatus("Address will be kept on this device.");
+  } else if (!state.kept) {
+    clearSession();
+    setStatus("Keep is off. This address will not be restored next visit.");
+  }
+});
 
 btnNew.addEventListener("click", () => {
-  void bootstrapInbox(true);
+  void createNewAddress();
 });
 
 btnCopy.addEventListener("click", async () => {
@@ -118,22 +160,50 @@ btnCopy.addEventListener("click", async () => {
   setStatus("Address copied.");
 });
 
+btnSave.addEventListener("click", async () => {
+  if (!state.account) return;
+  const recovery = formatRecovery(state.account);
+  await navigator.clipboard.writeText(recovery);
+  setStatus("Recovery line copied. Store it somewhere safe.");
+});
+
 btnOtp.addEventListener("click", () => {
   void sendTestOtp();
 });
 
+btnRestore.addEventListener("click", () => {
+  void restoreFromInput();
+});
+
 void bootstrapInbox(false);
+
+async function createNewAddress(): Promise<void> {
+  if (state.account) {
+    const ok = window.confirm(
+      `Replace ${state.account.address}?\n\nCopy recovery first if you want to keep using it later.`,
+    );
+    if (!ok) return;
+  }
+  await bootstrapInbox(true);
+}
 
 async function bootstrapInbox(forceNew: boolean): Promise<void> {
   stopPolling();
   setBusy(true);
-  setStatus(forceNew ? "Creating a fresh inbox…" : "Preparing inbox…");
+  setStatus(forceNew ? "Creating a fresh inbox…" : "Loading your kept inbox…");
 
   try {
     if (!forceNew) {
       const restored = restoreSession();
       if (restored) {
         state.account = restored;
+        try {
+          state.account = await loginInbox(restored.address, restored.password);
+          if (state.kept) persistSession(state.account);
+        } catch {
+          // Keep the saved account; token refresh may still work on demand.
+          state.account = restored;
+        }
       }
     }
 
@@ -142,24 +212,74 @@ async function bootstrapInbox(forceNew: boolean): Promise<void> {
       state.messages = [];
       state.selectedId = null;
       state.latestOtp = null;
-      persistSession(state.account);
+      if (state.kept) persistSession(state.account);
+      else clearSession();
     }
 
-    addressLabel.textContent = state.account.address;
-    btnCopy.disabled = false;
-    btnOtp.disabled = false;
-    renderMessages();
-    renderOtp();
-    setStatus("Inbox ready. Listening for mail…");
+    applyAccountToUi(state.account);
+    setStatus(
+      state.kept
+        ? `Kept inbox ready: ${state.account.address}`
+        : "Inbox ready. Turn on Keep to reuse it next time.",
+    );
     startPolling();
     await refreshMessages();
   } catch (error) {
     console.error(error);
-    addressLabel.textContent = "Unable to create inbox";
+    addressLabel.textContent = "Unable to open inbox";
     setStatus(errorMessage(error), true);
   } finally {
     setBusy(false);
   }
+}
+
+async function restoreFromInput(): Promise<void> {
+  const raw = restoreInput.value.trim();
+  if (!raw) {
+    setStatus("Paste a recovery line first.", true);
+    return;
+  }
+
+  const parsed = parseRecovery(raw);
+  if (!parsed) {
+    setStatus("Use format: address@domain | password", true);
+    return;
+  }
+
+  setBusy(true);
+  setStatus("Restoring kept inbox…");
+  try {
+    const account = await loginInbox(parsed.address, parsed.password);
+    state.account = account;
+    state.messages = [];
+    state.selectedId = null;
+    state.latestOtp = null;
+    state.kept = true;
+    keepToggle.checked = true;
+    persistKeepPreference(true);
+    persistSession(account);
+    applyAccountToUi(account);
+    renderKeepBadge();
+    restoreInput.value = "";
+    setStatus(`Restored ${account.address}. This address is kept.`);
+    startPolling();
+    await refreshMessages();
+  } catch (error) {
+    console.error(error);
+    setStatus(errorMessage(error), true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function applyAccountToUi(account: MailAccount): void {
+  addressLabel.textContent = account.address;
+  btnCopy.disabled = false;
+  btnSave.disabled = false;
+  btnOtp.disabled = false;
+  renderMessages();
+  renderOtp();
+  renderKeepBadge();
 }
 
 async function sendTestOtp(): Promise<void> {
@@ -220,30 +340,77 @@ async function refreshMessages(): Promise<void> {
 
   try {
     const remote = await listMessages(state.account.token);
-    let changed = false;
-
-    for (const message of remote) {
-      if (!state.messages.some((item) => item.id === message.id)) {
-        upsertMessage(message);
-        changed = true;
-
-        const candidate = extractOtp(
-          `${message.subject}\n${message.intro}\n${message.text ?? ""}`,
-        );
-        if (candidate) {
-          state.latestOtp = candidate;
+    ingestRemoteMessages(remote);
+  } catch (error) {
+    const message = errorMessage(error);
+    if (/401|invalid jwt|unauthorized|token/i.test(message)) {
+      const refreshed = await refreshToken();
+      if (refreshed && state.account) {
+        try {
+          const remote = await listMessages(state.account.token);
+          ingestRemoteMessages(remote);
+          return;
+        } catch (retryError) {
+          console.error(retryError);
         }
       }
     }
-
-    if (changed) {
-      renderMessages();
-      renderOtp();
-      setStatus("New mail arrived.");
-    }
-  } catch (error) {
     console.error(error);
   }
+}
+
+function ingestRemoteMessages(remote: MailMessage[]): void {
+  let changed = false;
+
+  for (const message of remote) {
+    if (!state.messages.some((item) => item.id === message.id)) {
+      upsertMessage(message);
+      changed = true;
+
+      const candidate = extractOtp(
+        `${message.subject}\n${message.intro}\n${message.text ?? ""}`,
+      );
+      if (candidate) {
+        state.latestOtp = candidate;
+      }
+    }
+  }
+
+  if (changed) {
+    renderMessages();
+    renderOtp();
+    setStatus("New mail arrived.");
+  }
+}
+
+async function refreshToken(): Promise<boolean> {
+  if (!state.account) return false;
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    try {
+      const next = await loginInbox(state.account!.address, state.account!.password);
+      state.account = {
+        ...state.account!,
+        ...next,
+        password: state.account!.password,
+      };
+      if (state.kept) persistSession(state.account);
+      setStatus("Session renewed. Still using your kept address.");
+      return true;
+    } catch (error) {
+      console.error(error);
+      setStatus(
+        "Saved address login expired. Use Restore with your recovery line.",
+        true,
+      );
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
 }
 
 async function openMessage(
@@ -259,7 +426,13 @@ async function openMessage(
   if (!message) return;
 
   if (message.source !== "test-otp" && !message.text && !message.html) {
-    message = await getMessage(state.account.token, id);
+    try {
+      message = await getMessage(state.account.token, id);
+    } catch (error) {
+      const refreshed = await refreshToken();
+      if (!refreshed || !state.account) throw error;
+      message = await getMessage(state.account.token, id);
+    }
     upsertMessage(message);
   }
 
@@ -328,11 +501,18 @@ function renderOtp(): void {
   otpValue.textContent = state.latestOtp;
 }
 
+function renderKeepBadge(): void {
+  keepBadge.textContent = state.kept ? "Saved" : "Temporary";
+  keepBadge.classList.toggle("off", !state.kept);
+}
+
 function setBusy(busy: boolean): void {
   state.busy = busy;
   btnNew.disabled = busy;
   btnOtp.disabled = busy || !state.account;
   btnCopy.disabled = !state.account;
+  btnSave.disabled = !state.account;
+  btnRestore.disabled = busy;
 }
 
 function setStatus(message: string, isError = false): void {
@@ -344,14 +524,53 @@ function persistSession(account: MailAccount): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(account));
 }
 
+function clearSession(): void {
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 function restoreSession(): MailAccount | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as MailAccount;
+    const account = JSON.parse(raw) as MailAccount;
+    if (!account.address || !account.password) return null;
+    return account;
   } catch {
     return null;
   }
+}
+
+function persistKeepPreference(kept: boolean): void {
+  localStorage.setItem(KEEP_KEY, kept ? "1" : "0");
+}
+
+function restoreKeepPreference(): boolean {
+  const raw = localStorage.getItem(KEEP_KEY);
+  if (raw === null) return true;
+  return raw === "1";
+}
+
+function formatRecovery(account: MailAccount): string {
+  return `${account.address} | ${account.password}`;
+}
+
+function parseRecovery(raw: string): { address: string; password: string } | null {
+  if (raw.includes("|")) {
+    const [address, ...rest] = raw.split("|");
+    const password = rest.join("|").trim();
+    if (!address.trim() || !password) return null;
+    return { address: address.trim().toLowerCase(), password };
+  }
+
+  const parts = raw.split(/\s+/);
+  if (parts.length >= 2 && parts[0].includes("@")) {
+    return {
+      address: parts[0].trim().toLowerCase(),
+      password: parts.slice(1).join(" ").trim(),
+    };
+  }
+
+  return null;
 }
 
 function formatTime(value: string): string {

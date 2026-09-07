@@ -30,10 +30,19 @@ async function parseJson<T>(response: Response): Promise<T> {
 
   if (!response.ok) {
     const err = data as { error?: string; details?: string };
-    throw new Error(err.error || err.details || text || `Request failed (${response.status})`);
+    throw new Error(
+      err.error || err.details || text || `Request failed (${response.status})`,
+    );
   }
 
   return data as T;
+}
+
+function authHeaders(token: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+    "X-Mailbox-Token": token,
+  };
 }
 
 export async function createInbox(): Promise<MailAccount> {
@@ -46,11 +55,17 @@ export async function createInbox(): Promise<MailAccount> {
   );
 }
 
-function authHeaders(token: string): HeadersInit {
-  return {
-    Authorization: `Bearer ${token}`,
-    "X-Mailbox-Token": token,
-  };
+export async function loginInbox(
+  address: string,
+  password: string,
+): Promise<MailAccount> {
+  return parseJson<MailAccount>(
+    await fetch(`${API}/login-inbox`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, password }),
+    }),
+  );
 }
 
 export async function listMessages(token: string): Promise<MailMessage[]> {
